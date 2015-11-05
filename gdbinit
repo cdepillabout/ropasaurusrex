@@ -15,7 +15,7 @@ break *0x804830c
 break *0x804832c
 
 # run the binary
-run < output
+# run < output
 
 # print the source code for main() and the read_whatever() function.
 x/25i 0x80483f4
